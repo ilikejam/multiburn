@@ -1,0 +1,1048 @@
+#!/bin/bash
+#Program to write on multiple burners,
+#recording on successive blanks until SIGINT (Ctrl-C) is received.
+#Copyright David Stark 2004 - 2008
+
+#This program is free software; you can redistribute it and/or modify
+#it under the terms of the GNU General Public License version 2 as published by
+#the Free Software Foundation.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details:
+#http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+#Any questions or suggestions at all, email me at: dave@davidstark.name
+
+VERSION=1.64
+
+
+#----------------------------------------------------------------------------------------------------------
+#INFO OUTPUT FUNCTIONS
+#----------------------------------------------------------------------------------------------------------
+
+#Print a help screen
+printhelp()
+{
+    echo "multiburn version $VERSION (C) 2004-2007 David Stark"
+    echo ""
+    echo "Program to burn one data set to multiple CD/DVD burners, ejecting each written "
+    echo "disc when recording has finished, and restarting the burn process when new "
+    echo "writable media is inserted."
+    echo ""
+    echo "BURN COMMANDS:"
+    echo "Disc image: "
+    echo "  multiburn <disc type> -i <image> [options] <device> [device] ..."
+    echo "TOC/Cue file: "
+    echo "  multiburn <disc type> -t <TOC file> [options] <device> [device] ..."
+    echo "Clone disc: "
+    echo "  multiburn <disc type> -c <read device> [options] <device> [device] ..."
+    echo "Data: "
+    echo "  multiburn <disc type> -d <directory or file> [options] <device> [device] ..."
+    echo "Audio Directory: "
+    echo "  multiburn --audiocd -a <directory> [options] <device> [device] ..."
+    echo "Singe audio file: "
+    echo "  multiburn --audiocd -s <audio file> [options] <device> [device] ..."
+    echo ""
+    echo "INFORMATION COMMANDS:"
+    echo "Help:"
+    echo "  multiburn --help"
+    echo "Software Check:"
+    echo "  multiburn --setup"
+    echo ""
+    echo "OPTIONS:"
+    echo "--dummy : Perform all actions, but do not write to the media."
+    echo "--keep : Retain the scratch directory on exit."
+    echo "--eject : Eject the drives before starting the first burn."
+    echo "-r <speed> : Specify the write speed (default is max drive speed)."
+    echo "-o <scratch directory> : Specify a scratch directory (default ./.multiburn)."
+    echo "-p <post-gap> : Specify audio CD post-track silence (default is 0)."
+    echo ""
+    echo "<disc type> : One of --dvd|--audiocd|--datacd"
+    echo "<device> : A CD or DVD burner device which cdrecord/cdrdao understands."
+    echo "           See 'man cdrecord' for details, or run 'multiburn --scan'"
+    echo "<image> : The image (ISO9660, usually) to be burned."
+    echo "<TOC file> : The TOC or cue file to be used for audio CDs."
+    echo "             See 'man cdrdao' for details."
+    echo "<directory or file> : File or directory to burn as disc contents."
+    echo "<directory> : Directory of audio files. Non audio files are skipped."
+    echo "<read device> : Device to read as the image / data source."
+    echo "<speed> : The burning speed, e.g. a value of 12 will burn at"
+    echo "          12x CD playing speed."
+    echo "<scratch directory> : The temp directory used by multiburn."
+    echo "                      Default is ./.multiburn"
+    echo "<post-gap> : The length of gap between tracks on an audio CD."
+    echo "             Format is mm:ss:ff (min:sec:frames). Default is no gap"
+    echo ""
+    echo "NB: Do Ctrl-C to terminate when recording is finished."
+}
+
+#Check the software environment for the needed utilities
+checksetup()
+{
+    OK_BASELINE=true
+    OK_DATAIMG=true
+    OK_AUDIOCONV=true
+    OK_DVD=true
+    OK_DVDREAD=true
+    NEEDED_BASELINE=""
+    NEEDED_DATAIMG=""
+    NEEDED_AUDIOCONV=""
+    NEEDED_DVD=""
+    NEEDED_DVDREAD=""
+    
+    echo "Looking for utilities..."
+    
+    if ! which cdrdao &> /dev/null
+    then
+        NEEDED_BASELINE="- cdrdao\n$NEEDED_BASELINE"
+        OK_BASELINE=false
+    fi
+    
+    if ! which cdrecord &> /dev/null
+    then
+        NEEDED_BASELINE="- cdrecord\n$NEEDED_BASELINE"
+	OK_BASELINE=false
+    fi
+    
+    if ! which mkisofs &> /dev/null
+    then
+        NEEDED_DATAIMG="- mkisofs"
+        OK_DATAIMG=false
+    fi
+    
+    if ! which mplayer &> /dev/null
+    then
+        NEEDED_AUDIOCONV="- mplayer"
+        OK_AUDIOCONV=false
+    fi
+    
+    if ! which dvdrecord &> /dev/null
+    then
+        NEEDED_DVD="- dvdrecord"
+        OK_DVD=false
+    fi
+    
+    if ! which readcd &> /dev/null
+    then
+        NEEDED_DVDREAD="- readcd"
+        OK_DVDREAD=false
+    fi
+    
+    if [ $OK_BASELINE == "false" ]
+    then
+        echo "The following utilities were not found, but are required for basic"
+        echo "operation of multiburn:"
+        echo -e $NEEDED_BASELINE | sed /^$/d
+    else
+        echo "All utilities necessary for basic operation are present."
+    fi
+    
+    if [ $OK_DATAIMG == "false" ]
+    then
+        echo "The following utilities were not found, but are required for creating"
+        echo "data images from files on your filesystem:"
+        echo -e $NEEDED_DATAIMG | sed /^$/d
+    else
+        echo "All utilities necessary to create new data images are present."
+    fi
+    
+    if [ $OK_AUDIOCONV == "false" ]
+    then
+        echo "The following utilities were not found, but are required to convert"
+        echo "audio files to CD standard files:"
+        echo -e $NEEDED_AUDIOCONV | sed /^$/d
+    else
+        echo "All utilities necessary to convert audio files are present."
+    fi
+    
+    if [ $OK_DVD == "false" ]
+    then
+        echo "The following utilities were not found, but are required to write"
+        echo "DVDs:"
+        echo -e $NEEDED_DVD | sed /^$/d
+    else
+        echo "All utilities necessary to write DVDs are present."
+    fi
+    
+    if [ $OK_DVDREAD == "false" ]
+    then
+        echo "The following utilities were not found, but are required to read"
+        echo "DVDs:"
+        echo -e $NEEDED_DVDREAD | sed /^$/d
+    else
+        echo "All utilities necessary to read DVDs are present."
+    fi
+}
+
+
+#----------------------------------------------------------------------------------------------------------
+#DATA PREP AND ASSOCIATED FUNCTIONS
+#----------------------------------------------------------------------------------------------------------
+
+#ALL *Prep() PROCEDURES MUST SET THE $PREPSOURCE AND $PREPTYPE VARIABLES.
+
+#Wait for a readable disc in a reader
+#waitreadable(<reader device>, <disc type string>)
+waitreadable()
+{
+    READER="$1"
+    RDISCTYPEMSG="$2"
+    while true
+    do
+	if cdrecord -V --inq dev="$READER" 2>&1 | grep "medium not present" &> /dev/null
+	then
+	    echo "Insert source $RDISCTYPEMSG into $READER."
+	fi
+	while cdrecord -V --inq dev="$READER" 2>&1 | grep "medium not present" &> /dev/null
+	do
+	    sleep 2
+	done
+	if ! cdrdao disk-info --device "$READER" 2>&1 | grep "CD-R empty" | grep "no" &>/dev/null
+	then
+	    echo "Source disc in $READER appears to be blank."
+	    cdrecord --eject dev="$READER" &> /dev/null
+	else
+	    return 0
+	fi
+    done
+}
+
+#Wait for a writable disc in a reader
+#waitreadable(<writer device>, <disc type string>)
+waitwritable()
+{
+    WRITER="$1"
+    WDISCTYPEMSG="$2"
+    while true
+    do
+	if ! cdrecord -V --inq dev="$WRITER" 2>&1 | grep "medium not present" &> /dev/null
+	then
+	    echo "Disc loaded on $WRITER. Continuing."
+	    
+            #Check to see if media is blank or CDRW
+	    if cdrdao disk-info --device "$WRITER" 2> /dev/null |\
+	      egrep "CD-R empty|CD-RW" | grep "yes" &> /dev/null
+	    then
+		return 0
+	    fi
+            #Disk wasn't blank
+	    cdrecord --eject dev="$WRITER" &> /dev/null
+	    echo "The disc in drive $WRITER is not writable."
+	    echo "Replace the disc in drive $WRITER with a writable $WDISCTYPEMSG."
+	fi
+	
+	sleep 2
+	
+    done
+}
+
+#Create TOC and image file for burning (data CDs)
+#cloneCDPrep(<reader device>, <scratch dir>)
+cloneCDPrep()
+{
+    SOURCEDEVICE="$1"
+    SCRATCH="$2"
+    
+    waitreadable "$SOURCEDEVICE" "data CD"
+    
+    echo "Reading data CD in $SOURCEDEVICE. This may take some time."
+    if ! cdrdao read-cd --read-raw --device "$SOURCEDEVICE" --datafile "$SCRATCH/multiburn.bin"\
+	"$SCRATCH/multiburn.toc" &> "$SCRATCH/read.log"
+    then
+	echo "Could not read data CD in $SOURCEDEVICE"
+	echo "Check $SCRATCH/read.log"
+	exit 1
+    fi
+    
+    #Spit out source CD and tell user what's going on
+    cdrecord --eject dev="$SOURCEDEVICE" &> /dev/null
+    echo
+    echo "********************************************************************************"
+    echo -n "The image is "
+    du -h "$SCRATCH/multiburn.bin" | awk '{ print $1 }'
+    
+    PREPSOURCE="$SCRATCH/multiburn.toc"
+    PREPTYPE=toc
+}
+
+#Create TOC and image file for burning (audio CDs)
+#cloneAudioPrep(<reader device>, <scratch dir>)
+cloneAudioPrep()
+{
+    SOURCEDEVICE="$1"
+    SCRATCH="$2"
+    
+    waitreadable "$SOURCEDEVICE" "audio CD"
+    
+    echo "Reading audio CD in $SOURCEDEVICE. This may take some time."
+    if ! cdrdao read-cd --read-raw --paranoia-mode 3 --device "$SOURCEDEVICE" --datafile "$SCRATCH/multiburn.bin"\
+	"$SCRATCH/multiburn.toc" &> "$SCRATCH/read.log"
+    then
+	echo "Could not read audio CD in $SOURCEDEVICE"
+	echo "Check $SCRATCH/read.log"
+	exit 1
+    fi
+    
+    #Spit out source CD and tell user what's going on
+    cdrecord --eject dev="$SOURCEDEVICE" &> /dev/null
+    echo
+    echo "********************************************************************************"
+    echo -n "The image is "
+    du -h "$SCRATCH/multiburn.bin" | awk '{ print $1 }'
+    
+    PREPSOURCE="$SCRATCH/multiburn.toc"
+    PREPTYPE=toc
+}
+
+
+#Create TOC and image file for burning (DVDs)
+#cloneDVDPrep(<reader device>, <scratch dir>)
+cloneDVDPrep()
+{
+    SOURCEDEVICE="$1"
+    SCRATCH="$2"
+    
+    waitreadable "$SOURCEDEVICE" "DVD"
+    
+    echo "Reading DVD in $SOURCEDEVICE. This may take some time."
+    if ! readcd dev="$SOURCEDEVICE" f="$SCRATCH/multiburn.iso" &> "$SCRATCH/read.log"
+    then
+	echo "Could not read DVD in $SOURCEDEVICE"
+	echo "Check $SCRATCH/read.log"
+	exit 1
+    fi
+    
+    #Spit out source CD and tell user what's going on
+    cdrecord --eject dev="$SOURCEDEVICE" &> /dev/null
+    echo
+    echo "********************************************************************************"
+    echo -n "The image is "
+    du -h "$SCRATCH/multiburn.iso" | awk '{ print $1 }'
+    
+    PREPSOURCE="$SCRATCH/multiburn.iso"
+    PREPTYPE=image
+}
+
+
+#Do sanity check for audio disc from TOC/cue
+#tocPrep(<TOC/cue file path>)
+tocPrep()
+{
+    TOCFILE="$1"
+    
+    if ! [ -e "$TOCFILE" ]
+    then
+	echo "$TOCFILE does not exist."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    #Is the TOC file valid?
+    if ! cdrdao show-toc "$TOCFILE" &> /dev/null
+    then
+	echo "$TOCFILE is not a valid TOC or cue file."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    #Tell the user the length of the CD
+    echo
+    echo "********************************************************************************"
+    echo "The disc will be "`cdrdao show-toc $TOCFILE 2> /dev/null | grep END | tail -n 1 | awk '{ print $2 }' | cut -d '(' -f 1`" (mm:ss:ff)"
+    
+    PREPSOURCE="$TOCFILE"
+    PREPTYPE=toc
+}
+
+
+
+#Do sanity check for disc from image
+#imagePrep(<image path>)
+imagePrep()
+{
+    IMAGE="$1"
+    
+    if ! [ -e "$IMAGE" ]
+    then
+	echo "$IMAGE does not exist."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    #Tell user image size
+    echo
+    echo "********************************************************************************"
+    echo -n "The image is "
+    du -h "$IMAGE" | awk '{ print $1 }'
+    
+    PREPSOURCE="$IMAGE"
+    PREPTYPE=image
+}
+
+
+
+#Do sanity check for single audio file, convert if necessary.
+#singleAudioPrep(<audio file>, <scratch dir>)
+singleAudioPrep()
+{
+    AUDIO="$1"
+    SCRATCH="$2"
+    
+    if ! [ -e "$AUDIO" ]
+    then
+	echo "$AUDIO does not exist."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    #Check file to see if it needs re-encoding
+    if file -L "$AUDIO" | grep RIFF | grep PCM | grep "16 bit" | grep stereo | grep 44100 &> /dev/null
+    then
+        #No re-encode required
+	if ! echo "CD_DA TRACK AUDIO AUDIOFILE "\""$AUDIO"\"" 0" > "$SCRATCH/multiburn.toc"
+	then
+	    echo "Could not create temporary TOC file:"
+	    echo "$SCRATCH/multiburn.toc"
+	    echo "Exiting."
+	    exit 1
+	fi
+    else
+        #Get here if we need to re-encode
+	INFILE=`echo "$AUDIO" | sed s://*:/:g`
+	OUTFILE="$SCRATCH/`basename \"$INFILE\"`.wav"
+	echo "Attempting to re-encode $AUDIO"
+	if ! which mplayer &> /dev/null
+	then
+	    echo "mplayer is not available for re-encoding."
+	    echo "Exiting."
+	    rmdir "$SCRATCH" &> /dev/null
+	    exit 1
+	fi
+	
+	#Decode
+	mplayer -vo null -vc null -af lavcresample=44100,channels=2,format=s16le -ao pcm:file="$OUTFILE" "$INFILE" &> "$SCRATCH/mplayer.log"
+	
+        #mplayer doesn't return proper error codes, so need to test output file.
+	if file -L "$OUTFILE" | grep RIFF | grep PCM | grep "16 bit" | grep stereo | grep 44100 &> /dev/null
+	then
+	    echo "CD_DA TRACK AUDIO AUDIOFILE "\""$OUTFILE"\"" 0" >> "$SCRATCH/multiburn.toc"
+	else
+	    echo "$AUDIO did not re-encode:"
+	    echo "Source file may not be playable by mplayer."
+	    echo "Exiting."
+	    rmdir "$SCRATCH" &> /dev/null
+	    exit 1
+	fi
+    fi
+    
+    #No tracks made it into the toc
+    #Not sure if this can ever be true, but better safe...
+    if ! grep TRACK "$SCRATCH/multiburn.toc" &> /dev/null
+    then
+	echo "No tracks to burn."
+	echo "Check $SCRATCH/multiburn.toc"
+	echo "Exiting."
+	exit 1
+    fi
+    
+    #Test the TOC, just to be sure.
+    if ! cdrdao show-toc "$SCRATCH/multiburn.toc" &> /dev/null
+    then
+	echo "The generated TOC file is not valid."
+	echo "Check $SCRATCH/multiburn.toc"
+	echo "Exiting."
+	exit 1
+    fi
+    
+    #Tell the user the length of the CD
+    echo
+    echo "********************************************************************************"
+    echo "The disc will be "`cdrdao show-toc $SCRATCH/multiburn.toc 2> /dev/null | grep END | tail -n 1 | awk '{ print $2 }' | cut -d '(' -f 1`" (mm:ss:ff)"
+    
+    PREPSOURCE="$SCRATCH/multiburn.toc"
+    PREPTYPE=toc
+}
+
+
+
+#Do sanity check for data directory or single file
+#dataPrep(<directory or file>, <scratch dir>)
+dataPrep()
+{
+    FILEORDIR="$1"
+    SCRATCH="$2"
+
+    if ! [ -e "$FILEORDIR" ]
+    then
+	echo "$FILEORDIR does not exist."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    echo "Creating temporary ISO image."
+    TITLESTRING=`basename "$FILEORDIR"`
+    if ! mkisofs -V "${TITLESTRING:0:32}" -J -r -o "$SCRATCH/multiburn.iso" "$FILEORDIR" &> "$SCRATCH/isofs.log"
+    then 
+	echo "Could not create temporary ISO image:"
+	echo "$SCRATCH/multiburn.iso"
+	echo "Check $SCRATCH/isofs.log"
+	echo "Exiting."
+	exit 1
+    fi
+    
+    #Tell the user the image size.
+    echo
+    echo "********************************************************************************"
+    echo -n "The image is " 
+    du -h "$SCRATCH/multiburn.iso" | awk '{print $1}'
+    
+    PREPSOURCE="$SCRATCH/multiburn.iso"
+    PREPTYPE=image
+}
+
+
+
+#Do sanity check for audio files directory
+#and prepare TOC file.
+#audioDirPrep(<directory>, <scratch dir>, <pre-gap>)
+audioDirPrep()
+{
+    AUDIODIR="$1"
+    SCRATCH="$2"
+    GAP=$3
+
+    if ! [ -d "$AUDIODIR" ]
+    then
+	echo "$AUDIODIR is not a directory."
+	echo "Exiting."
+	rmdir "$SCRATCH" &> /dev/null
+	exit 1
+    fi
+    
+    if ! echo "CD_DA" > "$SCRATCH/multiburn.toc"
+    then
+	echo "Could not create temporary TOC file:"
+	echo "$SCRATCH/multiburn.toc"
+	echo "Exiting."
+	exit 1
+    fi
+    
+    if ! [ -z $GAP ]
+    then
+	if ! echo $GAP | grep '^[0-9]\{1,\}:[0-9]\{1,2\}:[0-9]\{1,2\}$'
+	then
+	    echo "Post-gap value: $GAP is not valid."
+	    echo "Specify as mm:ss:ff"
+	    echo "Exiting."
+	    exit 1
+	fi
+    fi
+    
+    FILECOUNT=0
+    for GO in "$AUDIODIR"/*
+    do
+	
+        #Strip multiple slashes
+	GO=`echo "$GO" | sed s://*:/:g`
+	((FILECOUNT++))
+	
+        #True, if the file is already CD format
+	if file -L "$GO" | grep RIFF | grep PCM | grep "16 bit" | grep stereo | grep 44100 &> /dev/null
+	then
+	    if [ x$GAP == "x" ]
+	    then
+		echo "TRACK AUDIO AUDIOFILE "\""$GO"\"" 0" >> "$SCRATCH/multiburn.toc"
+	    else
+		echo "TRACK AUDIO AUDIOFILE "\""$GO"\"" 0 SILENCE $GAP" >> "$SCRATCH/multiburn.toc"
+	    fi
+	    TRACKLIST[$FILECOUNT]=`basename "$GO"`
+	else
+            #Get here if we need to re-encode
+	    OUTFILE="$SCRATCH"/`basename "$GO"`.wav
+	    
+	    echo "Re-encoding $GO"
+	    mplayer -vo null -vc null -af lavcresample=44100,channels=2,format=s16le -ao pcm:file="$OUTFILE" "$GO" &> "$SCRATCH/mplayer$FILECOUNT.log"
+	    
+            #mplayer doesn't return proper error codes, so need to test output file.
+	    if file -L "$OUTFILE" | grep RIFF | grep PCM | grep "16 bit" | grep stereo | grep 44100 &> /dev/null
+	    then
+		if [ x$GAP == "x" ]
+		then
+		    echo "TRACK AUDIO AUDIOFILE "\""$OUTFILE"\"" 0" >> "$SCRATCH/multiburn.toc"
+		else
+		    echo "TRACK AUDIO AUDIOFILE "\""$OUTFILE"\"" 0 SILENCE ""$GAP""" >> "$SCRATCH/multiburn.toc"
+		fi
+		TRACKLIST[$FILECOUNT]=`basename "$OUTFILE" .wav`
+	    else
+		if which mplayer &> /dev/null
+		then
+		    echo "$GO did not re-encode:"
+		    echo "Source file may not be playable by mplayer."
+		else
+		    echo "mplayer is not available for re-encoding."
+		    echo "Skipping $GO."
+		fi
+	    fi
+	fi
+    done
+    
+    #No tracks made it into the toc. Not really an error, but I'm calling it one.
+    if ! grep TRACK "$SCRATCH/multiburn.toc" &> /dev/null
+	then
+	echo "No tracks to burn."
+	echo "Exiting."
+	echo "Check $SCRATCH/multiburn.toc"
+	exit 1
+    fi
+
+    #Test the TOC, just to be sure.
+    if ! cdrdao show-toc "$SCRATCH/multiburn.toc" &> /dev/null
+    then
+	echo "The generated TOC file is not valid."
+	echo "This is a bug."
+	echo "Please keep a copy of $SCRATCH/multiburn.toc and report to the author."
+	echo "Exiting."
+	exit 1
+    fi
+    
+    #Tell the user the order of tracks and total disc time
+    echo
+    echo "********************************************************************************"
+    echo "The tracks will be burned in the following order:"
+    for ((IND=1; IND <= FILECOUNT ; IND++))
+    do
+	if ! [ x"${TRACKLIST[$IND]}" == "x" ]
+	then
+	    if [ ${#IND} -eq 1 ]
+	    then
+		echo "${IND})  ${TRACKLIST[$IND]}"
+	    else
+		echo "${IND}) ${TRACKLIST[$IND]}"
+	    fi
+	fi
+    done
+    echo "The disc will be "`cdrdao show-toc "$SCRATCH/multiburn.toc" 2> /dev/null | grep END | tail -n 1 | awk '{ print $2 }' | cut -d '(' -f 1`" (mm:ss:ff)"
+    if [ "x$GAP" == "x" ]
+    then
+	echo "There is no track post-gap."
+    else
+	echo "The post-gap is set to $GAP (mm:ss:ff)."
+    fi
+    
+    PREPSOURCE="$SCRATCH/multiburn.toc"
+    PREPTYPE=toc
+}
+
+
+#------------------------------------------------------------------------------------------------------
+#MAIN BURN FUNCTION
+#------------------------------------------------------------------------------------------------------
+
+
+#burn(<burner device>, <type of burn>, <source TOC/cue/image>, <scratch dir>, <burner index>, <burn speed>, <disc type>, <dummy?>, <eject?>).
+#Burn loop for a single burner
+burn()
+{
+    BURNBURNER="$1"
+    BURNTYPE=$2
+    BURNSOURCE="$3"
+    BURNSCRATCH="$4"
+    BURNNUM=$5
+    BURNSPEED=$6
+    BURNDISCTYPE=$7
+    BURNDUMMY=$8
+    BURNEJECT=$9
+
+    #see if we have a speed specified
+    if [ $BURNSPEED == null ]
+    then
+	BURNSPEEDCOM=""
+    else
+	BURNSPEEDCOM="--speed $BURNSPEED"
+    fi
+    
+    #Alter burn command args for dummy or normal burns
+    if $BURNDUMMY
+    then
+	CDRDAOCOMMAND="simulate"
+	DVDRECEXCOM="-dummy"
+	CDRECEXCOM="-dummy"
+    else
+	CDRDAOCOMMAND="write"
+	DVDRECEXCOM=""
+	CDRECEXCOM=""
+    fi
+    
+    #Make sure the specified burner is accessable.
+    #We don't want loops going for burners that can't burn
+    if ! cdrecord --inq dev="$BURNBURNER" &> /dev/null
+    then
+	echo "$BURNBURNER cannot be accessed by cdrecord. Continuing without it."
+	exit 1
+    fi
+    
+    #Eject the drives before the burn loops start if requested
+    if $BURNEJECT
+    then
+	if ! cdrecord -V --inq dev="$BURNBURNER" 2>&1 | grep "tray open" &> /dev/null
+	then
+	    cdrecord --eject dev="$BURNBURNER" &> /dev/null
+	fi
+    fi
+    
+    #Convert internal disc representations to CD or DVD
+    if [ $BURNDISCTYPE == "audiocd" ] || [ $BURNDISCTYPE == "datacd" ]
+    then
+	MSGMEDIA="CD"
+    elif [ $BURNDISCTYPE == "dvd" ]
+    then
+	MSGMEDIA="DVD"
+    else
+	echo "Bug in burn(). Please report this to the author."
+	echo "Exiting."
+	exit 1
+    fi
+    
+    echo "Insert a writable $MSGMEDIA into $BURNBURNER to begin."
+    while true
+    do
+	
+	waitwritable "$BURNBURNER" "$MSGMEDIA"
+	
+        #Make sure the data exists one last time
+	if ! [ -e "$BURNSOURCE" ]
+	then
+	    echo "$BURNSOURCE has disappeared."
+	    echo "Exiting."
+	    exit 1
+	fi
+	
+	case $BURNTYPE in
+	    toc)
+                #CD Audio / CD clone burn command
+		cdrdao $CDRDAOCOMMAND $BURNSPEEDCOM --overburn -n --eject --device "$BURNBURNER"\
+			  "$BURNSOURCE" &> "$BURNSCRATCH/lastWrite$BURNNUM.log"
+		RESULT="$?";;
+	    
+	    image)
+		if [ $BURNDISCTYPE == "datacd" ]
+		then
+                    #Data CD (non-clone) burn command
+		    cdrecord -v -dao $CDRECEXCOM --eject $BURNSPEEDCOM driveropts=burnfree dev="$BURNBURNER"\
+			      --data "$BURNSOURCE" &> "$BURNSCRATCH/lastWrite$BURNNUM.log"
+		    RESULT="$?"
+		elif [ $BURNDISCTYPE == "dvd" ]
+		then
+		    #DVD (any type) burn command
+		    dvdrecord -v -dao $DVDRECEXCOM --eject $BURNSPEEDCOM driveropts=burnfree dev="$BURNBURNER"\
+			      --data "$BURNSOURCE" &> "$BURNSCRATCH/lastWrite$BURNNUM.log"
+		    RESULT="$?"
+		else 
+                    #If we get here, it's my fault. E-mail me.
+		    echo "Serious error. Exiting."
+		    exit 1
+		fi;;
+	    
+	    *)
+                #If we get here, it's my fault. E-mail me.
+		echo "Serious error. Exiting."
+		exit 1;;
+	esac
+	
+	if [ $RESULT == 0 ]
+	then
+		  # Burn was OK
+	    echo "Burning completed successfully on drive $BURNBURNER."
+	    echo "Insert a writable $MSGMEDIA to continue on $BURNBURNER."
+	else
+		  # Burn failed
+	    echo "Error burning to $BURNBURNER."
+	    echo "The $MSGMEDIA in $BURNBURNER may not be correctly written."
+	    echo "Check $BURNSCRATCH/lastWrite$BURNNUM.log for more information."
+	    cdrecord --eject dev="$BURNBURNER" &> /dev/null
+	fi
+	
+	sleep 2
+	
+    done
+}
+
+
+#------------------------------------------------------------------------------------------------------
+#MAIN PROCESS
+#------------------------------------------------------------------------------------------------------
+
+
+#Burn speed - integer or "null"
+SPEED="null"
+
+#Pre-gap for audio CD tracks. -p on command line, or default of no gap
+POSTGAP=""
+
+#Do we eject the drives before starting the loops?
+EJECT=false
+
+#Default scratch directory
+SCRATCHDIR="$PWD/.multiburn"
+
+#Default is to rm -rf the scratch dir on exit
+RMSCRATCHDIR=true
+
+#Default to normal burn, not dummy
+DUMMY=false
+
+#Default to help if the args are crap
+TYPE="help"
+
+#Are we done with arg parsing?
+DONE=false
+
+#Set to false if the command line is for help, or scan etc where burners aren't needed
+DOBURN=true
+
+for CLIARG in "$@"
+do
+    if ! $DONE
+    then
+	case "$1" in
+	    -a)
+		TYPE="audioDir"
+		SOURCE="$2"
+		IMPDISCTYPE="audio"
+		shift 2;;
+	    -d)
+		TYPE="data"
+		SOURCE="$2"
+		IMPDISCTYPE="data"
+		shift 2;;
+	    -s)
+		TYPE="singleAudio"
+		SOURCE="$2"
+		IMPDISCTYPE="audio"
+		shift 2;;
+	    -i)
+		TYPE="image"
+		SOURCE="$2"
+		IMPDISCTYPE="data"
+		shift 2;;
+	    -t)
+		TYPE="toc"
+		SOURCE="$2"
+		IMPDISCTYPE="none"
+		shift 2;;
+	    -c)
+		TYPE="clone"
+		SOURCE="$2"
+		IMPDISCTYPE="none"
+		shift 2;;
+	    -r)
+		SPEED="$2"
+		shift 2;;
+	    -p)
+		POSTGAP=$2
+		shift 2;;
+	    -o)
+		SCRATCHDIR="$2"
+		shift 2;;
+	    --eject)
+		EJECT=true
+		shift 1;;
+	    --dummy)
+		DUMMY=true
+		shift 1;;
+	    --dvd)
+		DISCTYPE="dvd"
+		shift 1;;
+	    --audiocd)
+		DISCTYPE="audiocd"
+		shift 1;;
+	    --datacd)
+		DISCTYPE="datacd"
+		shift 1;;
+	    --keep)
+		RMSCRATCHDIR=false
+		shift 1;;
+	    --setup)
+		TYPE="check"
+		DOBURN=false
+		shift;;
+	    -h | --help)
+		TYPE="help"
+		DOBURN=false
+		shift;;
+	    *)
+		DONE=true;;
+	esac
+    fi
+done
+    
+if [ $TYPE == "check" ]
+then
+    checksetup
+    exit 0
+fi
+
+if [ $TYPE == "help" ]
+then
+    printhelp
+    exit 0
+fi
+
+if [ x$DISCTYPE == "x" ]
+then
+    echo "No disc type specified."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+
+if ! [ $DISCTYPE == "dvd" ] && ! [ $DISCTYPE == "audiocd" ] && ! [ $DISCTYPE == "datacd" ]
+then
+    echo "Unrecognised disc type specified."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+
+#This will be true if no burners were specified
+#i.e. we've shifted through all the args
+#and it's not an info type command line
+if [ $# == 0 ] && $DOBURN
+then
+    echo "No burners specified."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+
+if [ "x$SOURCE" == "x" ]
+then
+    echo "No source specified."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+
+#check command line for consistency
+if [ $IMPDISCTYPE == "data" ] && [ $DISCTYPE == "audiocd" ]
+then
+    echo "Inconsistent command line arguments."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+if [ $IMPDISCTYPE == "audio" ] && ! [ $DISCTYPE == "audiocd" ]
+then
+    echo "Inconsistent command line arguments."
+    echo "See '$0 --help' for usage instructions"
+    rm -rf "$SCRATCHDIR"
+    exit 0
+fi
+
+if [ -e "$SCRATCHDIR" ]
+then
+    echo "$SCRATCHDIR already exists."
+    echo "Exiting."
+	exit 1
+fi
+if ! mkdir "$SCRATCHDIR" &> /dev/null
+    then
+    echo "Could not create $SCRATCHDIR"
+    echo "If the directory exists already, please delete it, or"
+    echo "specify a different output directory"
+    echo "If the directory does not exist, check filesystem permissions."
+    echo "Exiting."
+    exit 1
+fi
+
+#Kill subshells, remove scratch directory if required then exit on Ctrl-C
+trap "pkill -P $$ &> /dev/null; if $RMSCRATCHDIR; then rm -rf \"$SCRATCHDIR\"; fi; exit 0" SIGINT SIGHUP &> /dev/null
+
+#Select a Prep function
+case $TYPE in
+    audioDir)
+	audioDirPrep "$SOURCE" "$SCRATCHDIR" $POSTGAP;;
+    
+    data)
+	dataPrep "$SOURCE" "$SCRATCHDIR";;
+    
+    singleAudio)
+	singleAudioPrep "$SOURCE" "$SCRATCHDIR";;
+    
+    toc)
+	tocPrep "$SOURCE";;
+    
+    image)
+	imagePrep "$SOURCE";;
+    
+    clone)
+	case $DISCTYPE in
+	    dvd)
+		cloneDVDPrep "$SOURCE" "$SCRATCHDIR";;
+	    
+	    audiocd)
+		cloneAudioPrep "$SOURCE" "$SCRATCHDIR";;
+	    
+	    datacd)
+		
+		cloneCDPrep "$SOURCE" "$SCRATCHDIR";;
+	    
+	    *)
+	        #If we get here, it's my fault. E-mail me.
+		echo "Serious error. Exiting."
+		exit 1
+		;;	
+	esac ;;
+    *)
+        #If we get here, it's my fault. E-mail me.
+	echo "Serious error. Exiting."
+	exit 1
+	;;
+esac
+
+#Tell the user what the burn speed is
+if [ $SPEED == "null" ]
+then
+    echo "Burning at max disk/drive speed"
+else
+    echo "Burning at speed: ${SPEED}X"
+fi
+
+#If it's a dummy run, tell the user
+if $DUMMY
+then
+    echo "Dummy run - discs will not be written to"
+fi
+
+echo "********************************************************************************"
+echo
+
+#Start burner loops
+LOOPCOUNT=1
+for BURNER in "$@"
+do
+    burn "$BURNER" $PREPTYPE "$PREPSOURCE" "$SCRATCHDIR" $LOOPCOUNT $SPEED $DISCTYPE $DUMMY $EJECT &
+    ((LOOPCOUNT++))
+done
+
+#relax
+wait
+
+#If we get here, then all the loops have finished.
+#That means burners were specified, but none were valid
+echo "No valid burners specified."
+echo "Exiting."
+if $RMSCRATCHDIR
+then
+    rm -rf $SCRATCHDIR
+fi
+exit 1
+    
+#There is no more.
